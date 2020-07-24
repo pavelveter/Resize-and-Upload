@@ -22,7 +22,7 @@ import (
     "flag"
     "fmt"
 //    "log"
-//    "os"
+    "os"
 
 //    "image"
 //    "image/color"
@@ -50,13 +50,22 @@ var (
 
 // Получаем флаги командной строки и инициализируем переменные
 func ParseCommandLineFlags() {
-    flag.UintVar(&out_biggest_dim, "b", default_out_biggest_dim, "biggest dimention")
-    flag.UintVar(&out_width, "w", default_out_width, "image width")
-    flag.UintVar(&out_height, "h", default_out_height, "image height")
-    flag.StringVar(&out_dir, "o", default_out_dir, "output directory")
-    flag.StringVar(&from_dir, "f", default_from_dir, "input directory")
-    flag.UintVar(&compress_rate, "c", default_compress_rate, "compress rate")
+    flag.UintVar(&out_biggest_dim, "b", default_out_biggest_dim, "resize on the biggest dimention")
+    flag.UintVar(&out_width, "w", default_out_width, "resized image width")
+    flag.UintVar(&out_height, "h", default_out_height, "resized image height")
+    flag.StringVar(&out_dir, "o", default_out_dir, "output directory for resized images")
+    flag.StringVar(&from_dir, "f", default_from_dir, "input directory of original images")
+    flag.UintVar(&compress_rate, "c", default_compress_rate, "jpeg compress rate")
     flag.Parse()
+
+    if os.Args == nil {
+        flag.PrintDefaults()
+        os.Exit(1)
+    }
+
+    if flag.NFlag() == 0 {
+        fmt.Println("ATTENTION: Decided to use defaults for all params.")
+    }
 
     if out_biggest_dim != 0 {
         on_big_size = true
@@ -66,5 +75,4 @@ func ParseCommandLineFlags() {
 
 func main() {
     ParseCommandLineFlags()
-    fmt.Println(on_big_size)
 }
