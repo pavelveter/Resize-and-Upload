@@ -38,6 +38,7 @@ const (
     compr_rate_s          = "jpeg compression rate"
     res_max_width_s       = "resized image max width"
     res_max_height_s      = "resized image max height"
+    author_s              = "coded by github.com/pavelveter with golang"
 )
 
 var (
@@ -158,4 +159,5 @@ func main() {
     doFromDirScan()
 
     fmt.Printf("\nTOTAL: %v files processed, %vM -> %vM. Took time: %3v\n", total_files_processed, total_from_files_size / 1024 / 1024, total_out_files_size / 1024 / 1024, time.Since(t0))
+    fmt.Println(author_s)
 }
