@@ -74,7 +74,7 @@ func checkVarsForValidity() {
 }
 
 // Проверяем, есть ли директория, куда сливать фотки, если нет — создаём
-func checkOutDir() {
+func checkOutputDir() {
     if _, err := os.Stat(out_dir); os.IsNotExist(err) {
         fmt.Println("ATTENTION: Directory '" + out_dir + "' not found and will be created.")
         err := os.Mkdir(out_dir, 0755)
@@ -90,10 +90,10 @@ func doResizeOneImage(fname string) {
     if err != nil {
         log.Fatalf("ATTENTION: Failed to open image: %v", err)
     }
-    
+
     dstImage := imaging.Resize(srcImage, int(out_width), int(out_height), imaging.Lanczos)
 
-    err = imaging.Save(dstImage, out_dir + dir_separator + fname)
+    err = imaging.Save(dstImage, out_dir + dir_separator + fname, imaging.JPEGQuality(int(compress_rate)))
     if err != nil {
         log.Fatalf("ATTENTION: Failed to save image: %v", err)
     }
@@ -119,10 +119,9 @@ func doFromDirScan() {
     }
 }
 
-
 func main() {
 	parseCommandLineFlags()
 	checkVarsForValidity()
-    checkOutDir()
+    checkOutputDir()
     doFromDirScan()
 }
