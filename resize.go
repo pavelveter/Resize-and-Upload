@@ -24,12 +24,13 @@ import (
     "path/filepath"
 	//    "image"
 	//    "image/color"
-	//    "github.com/disintegration/imaging"
+	    "github.com/disintegration/imaging"
 )
 
 const (
 	default_out_dir       = "Resized"
 	default_from_dir      = "."
+    dir_separator         = "/"
 	default_out_width     = 1920
 	default_out_height    = 0
 	default_compress_rate = 79
@@ -72,7 +73,33 @@ func checkVarsForValidity() {
 	}
 }
 
-// Выполняем уменьшение изображений
+// Проверяем, есть ли директория, куда сливать фотки, если нет — создаём
+func checkOutDir() {
+    if _, err := os.Stat(out_dir); os.IsNotExist(err) {
+        fmt.Println("ATTENTION: Directory '" + out_dir + "' not found and will be created.")
+        err := os.Mkdir(out_dir, 0755)
+        if err != nil {
+            log.Fatal(err)
+        }
+    }
+}
+
+// Делаем ресайз одной картинки
+func doResizeOneImage(fname string) {
+    srcImage, err := imaging.Open(from_dir + dir_separator + fname, imaging.AutoOrientation(true))
+    if err != nil {
+        log.Fatalf("ATTENTION: Failed to open image: %v", err)
+    }
+    
+    dstImage := imaging.Resize(srcImage, int(out_width), int(out_height), imaging.Lanczos)
+
+    err = imaging.Save(dstImage, out_dir + dir_separator + fname)
+    if err != nil {
+        log.Fatalf("ATTENTION: Failed to save image: %v", err)
+    }
+}
+
+// Сканируем директорию, откуда надо забирать файлы изображений
 func doFromDirScan() {
     f, err := os.Open(from_dir)
     if err != nil {
@@ -87,13 +114,15 @@ func doFromDirScan() {
 
     for _, file := range files {
         if ext := filepath.Ext(file.Name()); ext == ".jpg" || ext == ".jpeg" || ext == ".JPG" || ext == ".JPEG" {
-            fmt.Println(file.Name())
+            doResizeOneImage(file.Name())
         }
     }
 }
 
+
 func main() {
 	parseCommandLineFlags()
 	checkVarsForValidity()
-	doFromDirScan()
+    checkOutDir()
+    doFromDirScan()
 }
