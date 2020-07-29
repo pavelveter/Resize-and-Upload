@@ -1,12 +1,7 @@
 package main
 
 /*  Программа выполняет ресайз изображений в формате jpeg, что полезно для создания
-    уменьшенных версий картинок для просмотра и интернета.
-
-    Как запускать: <resize> -w=X [-h=Y] [-c=%] [-f=dir] -o=dir
-
-    w — размер изображения по горизонтали в пикселях
-    h — размер изображения по вертикали в пикселях
+    уменьшенных версий картинок для просмотра и интернета.  Как запускать: <resize> -w=X [-h=Y] [-c=%] [-f=dir] -o=dir w — размер изображения по горизонтали в пикселях h — размер изображения по вертикали в пикселях
 
     c — процент сжатия
 
@@ -17,7 +12,7 @@ package main
 */
 
 import (
-	"flag"
+    "flag"
 	"fmt"
 	"log"
 	"os"
@@ -32,7 +27,7 @@ const (
 	default_from_dir      = "."
     dir_separator         = "/"
 	default_out_width     = 1920
-	default_out_height    = 0
+	default_out_height    = 1920
 	default_compress_rate = 79
 )
 
@@ -58,7 +53,7 @@ func parseCommandLineFlags() {
 		fmt.Println("ATTENTION: No Flags. We use defaults.")
 	}
 
-	if out_height == 0 {
+	if out_height == out_width {
 		on_big_size = true
 	}
 	return
@@ -91,7 +86,7 @@ func doResizeOneImage(fname string) {
         log.Fatalf("ATTENTION: Failed to open image: %v", err)
     }
 
-    dstImage := imaging.Resize(srcImage, int(out_width), int(out_height), imaging.Lanczos)
+    dstImage := imaging.Fit(srcImage, int(out_width), int(out_height), imaging.Lanczos)
 
     err = imaging.Save(dstImage, out_dir + dir_separator + fname, imaging.JPEGQuality(int(compress_rate)))
     if err != nil {
