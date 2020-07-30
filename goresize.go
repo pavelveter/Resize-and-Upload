@@ -22,7 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -37,6 +37,7 @@ const (
 	default_out_height    = 1920
 	default_compress_rate = 89
 	default_quota_limit   = 8 // concurent go rutines
+	picture_extension     = "jpg"
 	attention             = "ATTENTION: "
 	inp_dir_s             = "input directory of original images"
 	out_dir_s             = "output directory for resized images"
@@ -59,6 +60,9 @@ var (
 	total_files_processed uint
 	total_from_files_size uint
 	total_out_files_size  uint
+
+	total_files_count int
+	mask_numb_s       string // [xxx] before filename in output
 )
 
 // Standart if check
@@ -81,7 +85,7 @@ func doResizeOneImage(fname string, wg *sync.WaitGroup, quotaCh chan struct{}) {
 	quotaCh <- struct{}{}
 	defer wg.Done()
 
-	srcImage, err := imaging.Open(from_dir+dir_separator+fname, imaging.AutoOrientation(true))
+	srcImage, err := imaging.Open(fname, imaging.AutoOrientation(true))
 	isFatal("Failed to open image: "+fname+" from "+from_dir, err)
 
 	// imaging.Fit — resize to fit in rectangle
@@ -89,49 +93,31 @@ func doResizeOneImage(fname string, wg *sync.WaitGroup, quotaCh chan struct{}) {
 
 	runtime.Gosched()
 
-	err = imaging.Save(dstImage, out_dir+dir_separator+fname, imaging.JPEGQuality(int(compress_rate)))
+	base_fname := filepath.Base(fname)
+
+	err = imaging.Save(dstImage, out_dir+dir_separator+base_fname, imaging.JPEGQuality(int(compress_rate)))
 	isFatal("Failed to save image:"+fname+" to "+out_dir, err)
 
-	from_file_size := sizeOfFile(from_dir + dir_separator + fname)
-	out_file_size := sizeOfFile(out_dir + dir_separator + fname)
+	from_file_size := sizeOfFile(fname)
+	out_file_size := sizeOfFile(out_dir + dir_separator + base_fname)
 
 	total_files_processed += 1
 	total_from_files_size += from_file_size
 	total_out_files_size += out_file_size
 
-	fmt.Printf("%s processed, %vk -> %vk.\n", fname, from_file_size/1024, out_file_size/1024)
+	fmt.Printf(mask_numb_s, uint(total_files_count)-total_files_processed+1)
+	fmt.Printf("%s processed, %vk -> %vk.\n", base_fname, from_file_size/1024, out_file_size/1024)
 	<-quotaCh
 }
 
-// Is the right extension for the picture?
-func isItPictureExtension(fname string) bool {
-	switch ext := strings.ToLower(filepath.Ext(fname)); ext {
-	case ".jpg":
-		return true
-	case ".jpeg":
-		return true
-	default:
-		return false
-	}
-}
-
 // Let's scan the directory where we need to pick up the image files.
-func doFromDirScan() {
+func doFromDirScan(files []string) {
 	var wg sync.WaitGroup
 	quotaCh := make(chan struct{}, quota_limit)
 
-	f, err := os.Open(from_dir)
-	isFatal("Can't open directory "+from_dir, err)
-
-	files, err := f.Readdir(-1)
-	f.Close()
-	isFatal("Can't read directory "+from_dir, err)
-
 	for _, file := range files {
-		if isItPictureExtension(file.Name()) {
-			wg.Add(1)
-			go doResizeOneImage(file.Name(), &wg, quotaCh)
-		}
+		wg.Add(1)
+		go doResizeOneImage(file, &wg, quotaCh)
 	}
 
 	wg.Wait()
@@ -170,10 +156,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// See if there's a directory to read and write pictures, if not, we exit or create it.
+	// See if there's a directory to read pictures
 	if _, err := os.Stat(from_dir); os.IsNotExist(err) {
 		isFatal("Failed to find input dir:", err)
 	}
+
+	// Trying to find some pictures by extension
+	dir_string, err := filepath.Glob(from_dir + dir_separator + "*." + picture_extension)
+	isFatal("Cant't count files from "+from_dir, err)
+
+	total_files_count = len(dir_string)
+	mask_numb_s = "[%" + strconv.Itoa(len(strconv.Itoa(total_files_count))) + "v] "
+
+	// Is it there directory for output jpegs, if not, we exit or create it.
 	if _, err := os.Stat(out_dir); os.IsNotExist(err) {
 		fmt.Printf(attention+"Directory '%s' not found and will be created.\n", out_dir)
 		err := os.Mkdir(out_dir, 0755)
@@ -181,7 +176,7 @@ func main() {
 	}
 
 	// Do All Work
-	doFromDirScan()
+	doFromDirScan(dir_string)
 
 	// Write total amount of files, megabytes and time spended.
 	fmt.Printf(total_s, total_files_processed, total_from_files_size/1024/1024, total_out_files_size/1024/1024, time.Since(t0))
