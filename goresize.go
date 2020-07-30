@@ -3,7 +3,7 @@ package main
 /*  Программа выполняет ресайз изображений в формате jpeg, что полезно для создания
     уменьшенных версий картинок для просмотра и интернета.
 
-    Как запускать: <resize> [-w=X] [-h=Y] [-c=%] [-q=] [-i=dir] [-o=dir]
+    Как запускать: <resize> [-w=X] [-h=Y] [-c=%] [-q=N] [-i=dir] [-o=dir]
 
     w — размер изображения по горизонтали в пикселях
     h — размер изображения по вертикали в пикселях
@@ -65,52 +65,6 @@ var (
 func isFatal(message string, err interface{}) {
 	if err != nil {
 		log.Fatalf(attention+message+" %v", err)
-	}
-}
-
-// It gets the command line flags and initializes the variables.
-func parseCommandLineFlags() {
-	flag.UintVar(&out_width, "w", default_out_width, res_max_width_s)
-	flag.UintVar(&out_height, "h", default_out_height, res_max_height_s)
-	flag.StringVar(&out_dir, "o", default_out_dir, out_dir_s)
-	flag.StringVar(&from_dir, "i", default_from_dir, inp_dir_s)
-	flag.UintVar(&compress_rate, "c", default_compress_rate, compr_rate_s)
-	flag.UintVar(&quota_limit, "q", default_quota_limit, quota_limit_s)
-	flag.Parse()
-
-	if flag.NFlag() == 0 {
-		fmt.Println(attention + "No Flags. We use defaults.")
-	}
-
-	fmt.Printf("%s: %v, %s: %v\n", res_max_width_s, out_width, res_max_height_s, out_height)
-	fmt.Printf(inp_dir_s+": %s\n", from_dir)
-	fmt.Printf(out_dir_s+": %s\n", out_dir)
-	fmt.Printf(compr_rate_s+": %v%%\n\n", compress_rate)
-}
-
-// Let's check the validity of the command line flags.
-func checkVarsForValidity() {
-	if compress_rate <= 9 || compress_rate >= 101 {
-		fmt.Println(attention + "Compress rate must be in the range of 10 to 100")
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
-	if quota_limit <= 0 {
-		fmt.Println(attention + "Quota limit must be not zero.")
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
-}
-
-// See if there's a directory to read and write pictures, if not, we exit or create it.
-func checkDirs() {
-	if _, err := os.Stat(from_dir); os.IsNotExist(err) {
-		isFatal("Failed to find input dir:", err)
-	}
-	if _, err := os.Stat(out_dir); os.IsNotExist(err) {
-		fmt.Printf(attention+"Directory '%s' not found and will be created.\n", out_dir)
-		err := os.Mkdir(out_dir, 0755)
-		isFatal("Failed to make directory "+out_dir, err)
 	}
 }
 
@@ -186,11 +140,50 @@ func doFromDirScan() {
 func main() {
 	t0 := time.Now()
 
-	parseCommandLineFlags()
-	checkVarsForValidity()
-	checkDirs()
+	// It gets the command line flags and initializes the variables.
+	flag.UintVar(&out_width, "w", default_out_width, res_max_width_s)
+	flag.UintVar(&out_height, "h", default_out_height, res_max_height_s)
+	flag.StringVar(&out_dir, "o", default_out_dir, out_dir_s)
+	flag.StringVar(&from_dir, "i", default_from_dir, inp_dir_s)
+	flag.UintVar(&compress_rate, "c", default_compress_rate, compr_rate_s)
+	flag.UintVar(&quota_limit, "q", default_quota_limit, quota_limit_s)
+	flag.Parse()
+
+	if flag.NFlag() == 0 {
+		fmt.Println(attention + "No Flags. We use defaults.")
+	}
+
+	fmt.Printf("%s: %v, %s: %v\n", res_max_width_s, out_width, res_max_height_s, out_height)
+	fmt.Printf(inp_dir_s+": %s\n", from_dir)
+	fmt.Printf(out_dir_s+": %s\n", out_dir)
+	fmt.Printf(compr_rate_s+": %v%%\n\n", compress_rate)
+
+	// Let's check the validity of the command line flags.
+	if compress_rate <= 9 || compress_rate >= 101 {
+		fmt.Println(attention + "Compress rate must be in the range of 10 to 100")
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+	if quota_limit <= 0 {
+		fmt.Println(attention + "Quota limit must be not zero.")
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+
+	// See if there's a directory to read and write pictures, if not, we exit or create it.
+	if _, err := os.Stat(from_dir); os.IsNotExist(err) {
+		isFatal("Failed to find input dir:", err)
+	}
+	if _, err := os.Stat(out_dir); os.IsNotExist(err) {
+		fmt.Printf(attention+"Directory '%s' not found and will be created.\n", out_dir)
+		err := os.Mkdir(out_dir, 0755)
+		isFatal("Failed to make directory "+out_dir, err)
+	}
+
+	// Do All Work
 	doFromDirScan()
 
+	// Write total amount of files, megabytes and time spended.
 	fmt.Printf(total_s, total_files_processed, total_from_files_size/1024/1024, total_out_files_size/1024/1024, time.Since(t0))
 	fmt.Println(author_s)
 }
