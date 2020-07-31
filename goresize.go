@@ -33,7 +33,6 @@ import (
 const (
 	default_out_dir       = "1. Для просмотра и интернета"
 	default_from_dir      = "2. Для печати и дизайна"
-	dir_separator         = "/"
 	default_out_width     = 1920
 	default_out_height    = 1920
 	default_compress_rate = 89
@@ -48,6 +47,7 @@ const (
 	quota_limit_s         = "number of concurent resizing routines"
 	author_s              = "coded by github.com/pavelveter with golang"
 	total_s               = "\nTOTAL: %v files processed, %vM -> %vM. Took time: %3v\n"
+	dir_created_s         = "Directory '%s' not found and will be created.\n"
 )
 
 var (
@@ -64,6 +64,7 @@ var (
 
 	total_files_count int
 	mask_numb_s       string // [xxx] before filename in output
+	dir_separator     string
 )
 
 // Standart if check
@@ -128,6 +129,14 @@ func doFromDirScan(files []string) {
 func main() {
 	t0 := time.Now()
 
+	if runtime.GOOS == "windows" {
+		dir_separator = "\\"
+	} else {
+		dir_separator = "/"
+	}
+
+	defer color.Unset()
+
 	// It gets the command line flags and initializes the variables.
 	flag.UintVar(&out_width, "w", default_out_width, res_max_width_s)
 	flag.UintVar(&out_height, "h", default_out_height, res_max_height_s)
@@ -172,10 +181,10 @@ func main() {
 	total_files_count = len(dir_string)
 	mask_numb_s = "[%" + strconv.Itoa(len(strconv.Itoa(total_files_count))) + "v] "
 
-	// Is it there directory for output jpegs, if not, we exit or create it.
+	// Is it there directory for output jpegs, if not, we create it.
 	if _, err := os.Stat(out_dir); os.IsNotExist(err) {
 		color.Set(color.FgGreen)
-		fmt.Printf(attention+"Directory '%s' not found and will be created.\n", out_dir)
+		fmt.Printf(attention+dir_created_s, out_dir)
 		color.Unset()
 		err := os.Mkdir(out_dir, 0755)
 		isFatal("Failed to make directory "+out_dir, err)
