@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/disintegration/imaging"
+	"github.com/fatih/color"
 )
 
 const (
@@ -68,6 +69,7 @@ var (
 // Standart if check
 func isFatal(message string, err interface{}) {
 	if err != nil {
+		color.Set(color.FgRed)
 		log.Fatalf(attention+message+" %v", err)
 	}
 }
@@ -105,8 +107,8 @@ func doResizeOneImage(fname string, wg *sync.WaitGroup, quotaCh chan struct{}) {
 	total_from_files_size += from_file_size
 	total_out_files_size += out_file_size
 
-	fmt.Printf(mask_numb_s, uint(total_files_count)-total_files_processed+1)
-	fmt.Printf("%s processed, %vk -> %vk.\n", base_fname, from_file_size/1024, out_file_size/1024)
+	fmt.Printf(mask_numb_s, color.GreenString(strconv.Itoa(int(uint(total_files_count)-total_files_processed+1))))
+	fmt.Printf("%s"+color.MagentaString(" processed, ")+"%vk "+color.MagentaString("->")+" %vk"+color.MagentaString(".")+"\n", base_fname, from_file_size/1024, out_file_size/1024)
 	<-quotaCh
 }
 
@@ -136,13 +138,15 @@ func main() {
 	flag.Parse()
 
 	if flag.NFlag() == 0 {
+		color.Set(color.FgGreen)
 		fmt.Println(attention + "No Flags. We use defaults.")
+		color.Unset()
 	}
 
-	fmt.Printf("%s: %v, %s: %v\n", res_max_width_s, out_width, res_max_height_s, out_height)
-	fmt.Printf(inp_dir_s+": %s\n", from_dir)
-	fmt.Printf(out_dir_s+": %s\n", out_dir)
-	fmt.Printf(compr_rate_s+": %v%%\n\n", compress_rate)
+	fmt.Printf("%s: %v, %s: %v\n", res_max_width_s, color.YellowString(strconv.Itoa(int(out_width))), res_max_height_s, color.YellowString(strconv.Itoa(int(out_height))))
+	fmt.Printf(inp_dir_s+": %s\n", color.YellowString(from_dir))
+	fmt.Printf(out_dir_s+": %s\n", color.YellowString(out_dir))
+	fmt.Printf(compr_rate_s+": %v%%\n\n", color.YellowString(strconv.Itoa(int(compress_rate))))
 
 	// Let's check the validity of the command line flags.
 	if compress_rate <= 9 || compress_rate >= 101 {
@@ -170,7 +174,9 @@ func main() {
 
 	// Is it there directory for output jpegs, if not, we exit or create it.
 	if _, err := os.Stat(out_dir); os.IsNotExist(err) {
+		color.Set(color.FgGreen)
 		fmt.Printf(attention+"Directory '%s' not found and will be created.\n", out_dir)
+		color.Unset()
 		err := os.Mkdir(out_dir, 0755)
 		isFatal("Failed to make directory "+out_dir, err)
 	}
@@ -180,5 +186,5 @@ func main() {
 
 	// Write total amount of files, megabytes and time spended.
 	fmt.Printf(total_s, total_files_processed, total_from_files_size/1024/1024, total_out_files_size/1024/1024, time.Since(t0))
-	fmt.Println(author_s)
+	fmt.Println(color.GreenString(author_s))
 }
