@@ -39,7 +39,7 @@ const (
 	default_quota_limit   = 8 // concurent go rutines
 	picture_extension     = "jpg"
 	attention             = "ATTENTION: "
-	inp_dir_s             = "input directory of original images"
+	from_dir_s             = "input directory of original images"
 	out_dir_s             = "output directory for resized images"
 	compr_rate_s          = "jpeg compression rate"
 	res_max_width_s       = "resized image max width"
@@ -141,7 +141,7 @@ func main() {
 	flag.UintVar(&out_width, "w", default_out_width, res_max_width_s)
 	flag.UintVar(&out_height, "h", default_out_height, res_max_height_s)
 	flag.StringVar(&out_dir, "o", default_out_dir, out_dir_s)
-	flag.StringVar(&from_dir, "i", default_from_dir, inp_dir_s)
+	flag.StringVar(&from_dir, "i", default_from_dir, from_dir_s)
 	flag.UintVar(&compress_rate, "c", default_compress_rate, compr_rate_s)
 	flag.UintVar(&quota_limit, "q", default_quota_limit, quota_limit_s)
 	flag.Parse()
@@ -153,7 +153,7 @@ func main() {
 	}
 
 	fmt.Printf("%s: %v, %s: %v\n", res_max_width_s, color.YellowString(strconv.Itoa(int(out_width))), res_max_height_s, color.YellowString(strconv.Itoa(int(out_height))))
-	fmt.Printf(inp_dir_s+": %s\n", color.YellowString(from_dir))
+	fmt.Printf(from_dir_s+": %s\n", color.YellowString(from_dir))
 	fmt.Printf(out_dir_s+": %s\n", color.YellowString(out_dir))
 	fmt.Printf(compr_rate_s+": %v%%\n\n", color.YellowString(strconv.Itoa(int(compress_rate))))
 
