@@ -16,8 +16,10 @@ package main
 */
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -26,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/disintegration/imaging"
+	vips "github.com/davidbyttow/govips/v2"
 	"github.com/fatih/color"
 )
 
@@ -36,7 +38,6 @@ const (
 	default_out_width     = 1920
 	default_out_height    = 1920
 	default_compress_rate = 89
-	default_quota_limit   = 8 // concurent go rutines
 	picture_extension     = "jpg"
 	attention             = "ATTENTION: "
 	from_dir_s             = "input directory of original images"
@@ -64,7 +65,8 @@ var (
 
 	total_files_count int
 	mask_numb_s       string // [xxx] before filename in output
-	dir_separator     string
+
+	ep *vips.ExportParams
 )
 
 // Standart if check
@@ -84,25 +86,34 @@ func sizeOfFile(fname string) uint {
 }
 
 // Do resize one picture and do some statistics
-func doResizeOneImage(fname string, wg *sync.WaitGroup, quotaCh chan struct{}) {
+func doResizeOneImage(fname string, wg *sync.WaitGroup, quotaCh chan struct{}, ep *vips.ExportParams) {
 	quotaCh <- struct{}{}
 	defer wg.Done()
 
-	srcImage, err := imaging.Open(fname, imaging.AutoOrientation(true))
+	image, err := vips.NewImageFromFile(fname)
 	isFatal("Failed to open image: "+fname+" from "+from_dir, err)
+	from_file_size := sizeOfFile(fname)
 
-	// imaging.Fit — resize to fit in rectangle
-	dstImage := imaging.Fit(srcImage, int(out_width), int(out_height), imaging.Lanczos)
+	scale := float64(out_width) / float64(image.Width())
+	err = image.ResizeWithVScale(scale, scale, vips.KernelLanczos3)
+	isFatal("Failed to resize image: "+fname, err)
 
-	runtime.Gosched()
+	image_bytes, _, err := image.Export(ep)
+	isFatal("Failed to export image: "+fname, err)
 
 	base_fname := filepath.Base(fname)
 
-	err = imaging.Save(dstImage, out_dir+dir_separator+base_fname, imaging.JPEGQuality(int(compress_rate)))
-	isFatal("Failed to save image:"+fname+" to "+out_dir, err)
+	outFile, err := os.Create(filepath.Join(out_dir, base_fname))
+	isFatal("Failed to create file:"+fname+" in "+out_dir, err)
 
-	from_file_size := sizeOfFile(fname)
-	out_file_size := sizeOfFile(out_dir + dir_separator + base_fname)
+	writer := bufio.NewWriter(outFile)
+	_, err = writer.Write(image_bytes)
+	isFatal("Failed to write image:"+fname+" to "+out_dir, err)
+
+	writer.Flush()
+	outFile.Close()
+
+	out_file_size := uint(len(image_bytes))
 
 	total_files_processed += 1
 	total_from_files_size += from_file_size
@@ -114,26 +125,26 @@ func doResizeOneImage(fname string, wg *sync.WaitGroup, quotaCh chan struct{}) {
 }
 
 // Let's scan the directory where we need to pick up the image files.
-func doFromDirScan(files []string) {
+func doFromDirScan(files []string, ep *vips.ExportParams) {
 	var wg sync.WaitGroup
 	quotaCh := make(chan struct{}, quota_limit)
 
 	for _, file := range files {
 		wg.Add(1)
-		go doResizeOneImage(file, &wg, quotaCh)
+		go doResizeOneImage(file, &wg, quotaCh, ep)
 	}
 
 	wg.Wait()
 }
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	t0 := time.Now()
 
-	if runtime.GOOS == "windows" {
-		dir_separator = "\\"
-	} else {
-		dir_separator = "/"
-	}
+	log.SetOutput(io.Discard)
+	vips.Startup(nil)
+	ep := vips.NewDefaultJPEGExportParams()
 
 	defer color.Unset()
 
@@ -143,7 +154,7 @@ func main() {
 	flag.StringVar(&out_dir, "o", default_out_dir, out_dir_s)
 	flag.StringVar(&from_dir, "i", default_from_dir, from_dir_s)
 	flag.UintVar(&compress_rate, "c", default_compress_rate, compr_rate_s)
-	flag.UintVar(&quota_limit, "q", default_quota_limit, quota_limit_s)
+	flag.UintVar(&quota_limit, "q", uint(runtime.NumCPU()), quota_limit_s)
 	flag.Parse()
 
 	if flag.NFlag() == 0 {
@@ -175,7 +186,7 @@ func main() {
 	}
 
 	// Trying to find some pictures by extension
-	dir_string, err := filepath.Glob(from_dir + dir_separator + "*." + picture_extension)
+	dir_string, err := filepath.Glob(filepath.Join(from_dir, "*." + picture_extension))
 	isFatal("Cant't count files from "+from_dir, err)
 
 	total_files_count = len(dir_string)
@@ -191,9 +202,9 @@ func main() {
 	}
 
 	// Do All Work
-	doFromDirScan(dir_string)
+	doFromDirScan(dir_string, ep)
 
 	// Write total amount of files, megabytes and time spended.
-	fmt.Printf(total_s, total_files_processed, total_from_files_size/1024/1024, total_out_files_size/1024/1024, time.Since(t0))
+	fmt.Printf(total_s, total_files_processed, total_from_files_size/1024/1024, total_out_files_size/1024/1024, time.Since(t0).Round(time.Millisecond))
 	fmt.Println(color.GreenString(author_s))
 }
