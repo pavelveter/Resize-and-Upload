@@ -1,7 +1,5 @@
-# goresize
+# Resize and Upload
 
-Utility to reduce JPEG size in several threads.
+A script that automates uploading photos to the cloud, and also reduces them before that. And at the end it will send a link to Telegram.
 
-Based on library github.com/disintegration/imaging
-
-![Screenshot of goresize](https://i.ibb.co/nC6BpQ3/Screenshot-2020-07-31-at-21-03-40.png)
+![Screenshot of go resize cli utility](https://i.ibb.co/nC6BpQ3/Screenshot-2020-07-31-at-21-03-40.png)
