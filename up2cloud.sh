@@ -120,7 +120,7 @@ printing_files=$(get_file_list "${printing_dir}")
 # Compare the lists of files
 if [[ "${viewing_files}" != "${printing_files}" ]]; then
     echo -e "${GREEN}Making little copies of the images for fast view...${NC}"
-    ~/veter_scripts/goresize -c 79 -h 1920 -w 1920 -i "${printing_dir}" -o "${viewing_dir}"
+    ~/veter_scripts/goresize -c 79 -h 1500 -w 1500 -i "${printing_dir}" -o "${viewing_dir}"
 else
     echo -e "${YELLOW}File lists in ${viewing_dir} and ${printing_dir} are identical. Skipping resize.${NC}\n"
 fi
