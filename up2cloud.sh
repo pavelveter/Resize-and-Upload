@@ -8,7 +8,8 @@ viewing_dir='1. Для просмотра и интернета'
 printing_dir='2. Для печати и дизайна'
 cloud=mailru
 skip_cloud_dirs='^WPJA.com_Pics|^Мастер-классы|^Разное|^ПФ|^Копии|^Backups|^Calls'
-last_remote_file=".up2cloud_last_remote"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+last_remote_file="${script_dir}/.up2cloud_last_remote"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -66,14 +67,22 @@ preflight() {
         exit 1
     fi
 
-    if ! rclone listremotes | grep -q "^${cloud}:"; then
-        log_error "rclone is not configured with remote ${cloud}. Configure with rclone config."
-        exit 1
+    if [[ "${dry_run}" != true ]]; then
+        if ! rclone listremotes | grep -q "^${cloud}:"; then
+            log_error "rclone is not configured with remote ${cloud}. Configure with rclone config."
+            exit 1
+        fi
+    else
+        log_warn "DRY RUN: skipping rclone remote config check"
     fi
 
-    if [[ -z "${TG_API:-}" || -z "${TG_CHAT:-}" ]]; then
-        log_error "Telegram environment variables TG_API and TG_CHAT must be set."
-        exit 1
+    if [[ "${dry_run}" != true ]]; then
+        if [[ -z "${TG_API:-}" || -z "${TG_CHAT:-}" ]]; then
+            log_error "Telegram environment variables TG_API and TG_CHAT must be set."
+            exit 1
+        fi
+    else
+        log_warn "DRY RUN: skipping Telegram env check"
     fi
 }
 
@@ -181,8 +190,19 @@ build_thumbnail() {
         if [[ "${dry_run}" == true ]]; then
             log_info "DRY RUN: would build thumbnail.jpg"
         else
-            gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
-            ~/veter_scripts/imgcat -W 600px thumbnail.jpg
+            while true; do
+                gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+                ~/veter_scripts/imgcat -W 600px thumbnail.jpg
+                if gum confirm "Thumbnail OK? (Yes = continue, No = rebuild)"; then
+                    break
+                fi
+                log_warn "Regenerating thumbnail with a new random selection..."
+                mapfile -t files < <(find "${viewing_dir}" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) | awk 'BEGIN {srand()} {print rand(), $0}' | sort -n | cut -d' ' -f2- | head -n 10)
+                if [[ ${#files[@]} -eq 0 ]]; then
+                    log_warn "No images available on retry. Skipping thumbnail."
+                    break
+                fi
+            done
         fi
     else
         log_warn "Reusing existing thumbnail.jpg"
@@ -347,6 +367,7 @@ main() {
     set -- "${args[@]}"
 
     preflight
+    maybe_toggle_vpn
     prompt_thumbnail_action
     ensure_source_images
 
@@ -356,7 +377,6 @@ main() {
     maybe_resize
     build_thumbnail
     cleanup_dsstore
-    maybe_toggle_vpn
 
     start_caffeinate
     trap cleanup EXIT
