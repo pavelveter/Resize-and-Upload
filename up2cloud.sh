@@ -163,6 +163,20 @@ vpn_active() {
     return 1
 }
 
+get_connected_vpn_services() {
+    scutil --nc list 2>/dev/null | awk '/\((Connected|Connecting|Подключено|Соединено)\)/ {for(i=1;i<=NF;i++){if($i ~ /\".*\"/){gsub(/"/, "", $i); print $i}}}'
+}
+
+stop_vpn_service() {
+    scutil --nc stop "$1" >/dev/null 2>&1 || true
+}
+
+start_vpn_service() {
+    scutil --nc start "$1" >/dev/null 2>&1 || true
+}
+
+vpn_services_to_restart=""
+
 caffeinate_pid=""
 
 start_caffeinate() {
@@ -194,7 +208,7 @@ mapfile -t files < <(find "${viewing_dir}" -maxdepth 1 -type f -name "*.jpg" | a
 if [[ ${#files[@]} -eq 0 ]]; then
     echo -e "${YELLOW}No images in ${viewing_dir} to build preview. Skipping thumbnail.${NC}"
 elif [[ "${regenerate_thumbnail}" == true ]]; then
-    gum pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+    gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
     ~/veter_scripts/imgcat -W 600px thumbnail.jpg
 else
     echo -e "${YELLOW}Reusing existing thumbnail.jpg${NC}"
@@ -203,13 +217,23 @@ fi
 find . -name ".DS_Store" -delete
 
 if vpn_active; then
-    echo -e "${YELLOW}VPN is currently connected (detected via scutil). Upload may be slower or blocked. Press any key to continue, or Ctrl-C to abort.${NC}"
-    read -r -n 1 -s
-    echo
+    connected_vpns=$(get_connected_vpn_services || true)
+    if gum confirm "VPN is connected. Turn it off for upload and restore afterwards?"; then
+        vpn_services_to_restart="${connected_vpns}"
+        while IFS= read -r svc; do
+            [[ -z "${svc}" ]] && continue
+            echo -e "${YELLOW}Stopping VPN: ${svc}${NC}"
+            stop_vpn_service "${svc}"
+        done <<< "${connected_vpns}"
+    else
+        echo -e "${YELLOW}VPN is currently connected (detected via scutil). Upload may be slower or blocked. Press any key to continue, or Ctrl-C to abort.${NC}"
+        read -r -n 1 -s
+        echo
+    fi
 fi
 
 start_caffeinate
-trap stop_caffeinate EXIT
+trap 'stop_caffeinate; if [[ -n "${vpn_services_to_restart}" ]]; then while IFS= read -r svc; do [[ -z "${svc}" ]] && continue; start_vpn_service "${svc}"; done <<< "${vpn_services_to_restart}"; fi' EXIT
 
 # Check and create remote directories if they do not exist
 echo -e "${GREEN}Checking and creating remote directories if not exists...${NC}"
@@ -229,6 +253,13 @@ echo -e "${GREEN}Syncing...${NC}"
 rclone sync "${viewing_dir}/" "${cloud}:/${rem_dir}/${loc_dir}/${viewing_dir}" --progress --transfers=20 || { echo -e "${RED}Failed to sync viewing directory${NC}"; exit 1; }
 rclone sync "${printing_dir}/" "${cloud}:/${rem_dir}/${loc_dir}/${printing_dir}" --progress --transfers=20 || { echo -e "${RED}Failed to sync printing directory${NC}"; exit 1; }
 stop_caffeinate
+if [[ -n "${vpn_services_to_restart}" ]]; then
+    while IFS= read -r svc; do
+        [[ -z "${svc}" ]] && continue
+        echo -e "${YELLOW}Starting VPN: ${svc}${NC}"
+        start_vpn_service "${svc}"
+    done <<< "${vpn_services_to_restart}"
+fi
 trap - EXIT
 
 echo -e "${GREEN}Getting link...${NC}"
