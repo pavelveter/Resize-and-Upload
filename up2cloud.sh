@@ -7,7 +7,7 @@ set -o pipefail
 viewing_dir='1. Для просмотра и интернета'
 printing_dir='2. Для печати и дизайна'
 cloud=mailru
-skip_cloud_dirs='^WPJA.com_Pics|^Мастер-классы|^Разное|^ПФ|^Копии'
+skip_cloud_dirs='^WPJA.com_Pics|^Мастер-классы|^Разное|^ПФ|^Копии|^Backups|^Calls'
 
 # Define color codes
 GREEN='\033[0;32m'
@@ -17,10 +17,29 @@ NC='\033[0m' # No Color
 
 echo -e ""
 
+# Thumbnail handling
+regenerate_thumbnail=true
+if [[ -f thumbnail.jpg ]]; then
+    if ! choice=$(printf '%s\n' "Overwrite" "Keep existing" | gum choose --header "thumbnail.jpg exists. Overwrite?"); then
+        echo -e "${RED}Selection cancelled.${NC}"
+        exit 1
+    fi
+    if [[ "${choice}" == "Keep existing" ]]; then
+        regenerate_thumbnail=false
+        echo -e "${YELLOW}Keeping existing thumbnail.jpg${NC}"
+    else
+        echo -e "${YELLOW}Will overwrite thumbnail.jpg${NC}"
+    fi
+fi
+
 # Function to check for a command and provide installation instructions if not found
 check_command() {
     command -v "$1" >/dev/null 2>&1 || {
-        echo -e "${RED}$1 is not installed. You can install it using Homebrew with: brew install $2${NC}"
+        if [[ -n "${2:-}" ]]; then
+            echo -e "${RED}$1 is not installed. You can install it using Homebrew with: brew install $2${NC}"
+        else
+            echo -e "${RED}$1 is not installed.${NC}"
+        fi
         exit 1
     }
 }
@@ -29,13 +48,17 @@ check_command() {
 declare -A commands=(
     [magick]="imagemagick"
     [rclone]="rclone"
+    [gum]="gum"
+    [scutil]=""
+    [pbcopy]=""
+    [pbpaste]=""
+    [curl]="curl"
+    [afplay]=""
 )
 
 # Check for required commands
 for cmd in "${!commands[@]}"; do
-    if [[ -n "${commands[$cmd]}" ]]; then
-        check_command "$cmd" "${commands[$cmd]}"
-    fi
+    check_command "$cmd" "${commands[$cmd]}"
 done
 
 # Check if the custom goresize script exists
@@ -44,8 +67,18 @@ if [[ ! -x ~/veter_scripts/goresize ]]; then
     exit 1
 fi
 
+if [[ ! -x ~/veter_scripts/imgcat ]]; then
+    echo -e "${RED}Custom script imgcat not found or not executable. Please download it from github.com/pavelveter${NC}"
+    exit 1
+fi
+
 if ! rclone listremotes | grep -q "^${cloud}:"; then
     echo -e "${RED}rclone is not configured with remote ${cloud}. Configure with rclone config.${NC}"
+    exit 1
+fi
+
+if [[ -z "${TG_API:-}" || -z "${TG_CHAT:-}" ]]; then
+    echo -e "${RED}Telegram environment variables TG_API and TG_CHAT must be set.${NC}"
     exit 1
 fi
 
@@ -56,7 +89,8 @@ if ! find . -maxdepth 1 -type f -name "*.jpg" ! -name "thumbnail.jpg" | grep -q 
         echo -e "${YELLOW}No .jpg files found in the current directory, but found in ${printing_dir}.${NC}"
     else
         echo -e "${RED}No .jpg files found in the current directory and in ${printing_dir}. Exiting.${NC}"
-        exit 1
+        read -rp "Press Enter to continue or Ctrl-C to exit"
+        #exit 1
     fi
 fi
 
@@ -69,26 +103,19 @@ loc_dir=$(basename "$(pwd)")
 # Check for command line parameters
 if [[ $# -eq 0 ]]; then
     # Get the list of directories on the remote server
-    remotes_output=$(rclone lsd "${cloud}:" | cut -c44- | grep -v -E "${skip_cloud_dirs}")
+    remotes_output=$(rclone lsf "${cloud}:" --dirs-only --format p | sed 's:/$::' | grep -v -E "${skip_cloud_dirs}" || true)
+    if [[ -z "${remotes_output}" ]]; then
+        echo -e "${RED}No remote directories found on ${cloud} after filtering.${NC}"
+        exit 1
+    fi
 
-    # Initialize array
-    remotes=()
-
-    # Fill the array with lines
-    while IFS= read -r line; do
-        remotes+=("$line")
-    done <<< "$remotes_output"
+    mapfile -t remotes <<< "${remotes_output}"
 
     echo -e "\nPlease, select the directory to upload"
-
-    # Display the list of directories for selection
-    select rem_dir in "${remotes[@]}"; do
-        if [[ -z ${rem_dir} ]]; then
-            echo -e "${YELLOW}You entered the wrong number, please try again${NC}"
-        else
-            break
-        fi
-    done
+    if ! rem_dir=$(printf '%s\n' "${remotes[@]}" | gum choose --header "Remote directories on ${cloud}" --limit 1); then
+        echo -e "${RED}Selection cancelled.${NC}"
+        exit 1
+    fi
 
     echo -e "${GREEN}"
     read -rp "Press ENTER to upload to ${cloud}:/${rem_dir}/${loc_dir}"
@@ -107,10 +134,32 @@ fi
 # Function to get the list of files in a directory
 get_file_list() {
     if [[ ! -d "$1" ]]; then
-        echo -e "${RED}$1 not found${NC}"
-        return
+        mkdir -p "$1"
     fi
-    find "$1" -maxdepth 1 -type f -name "*.jpg" | cut -d/ -f2 | sort
+    find "$1" -maxdepth 1 -type f -name "*.jpg" -exec basename {} \; | sort
+}
+
+vpn_active() {
+    local list_output service status
+
+    list_output=$(scutil --nc list 2>/dev/null || true)
+    if printf '%s\n' "${list_output}" | grep -Eiq '\((Connected|Connecting|Подключено|Соединено)\)'; then
+        return 0
+    fi
+
+    # Check each named service explicitly
+    while IFS= read -r service; do
+        status=$(scutil --nc status "${service}" 2>/dev/null || true)
+        if printf '%s\n' "${status}" | grep -Eiq 'Connected|Connecting|Подключено|Соединено'; then
+            return 0
+        fi
+    done < <(printf '%s\n' "${list_output}" | sed -n 's/.*"\([^"]\+\)".*/\1/p')
+
+    # Fallback: presence of utun interfaces usually indicates an active VPN tunnel
+    if ifconfig 2>/dev/null | grep -q '^utun[0-9]\+'; then
+        return 0
+    fi
+    return 1
 }
 
 # Get the list of files in both directories
@@ -127,10 +176,22 @@ fi
 
 echo -e "${GREEN}Making preview image...${NC}"
 mapfile -t files < <(find "${viewing_dir}" -maxdepth 1 -type f -name "*.jpg" | awk 'BEGIN {srand()} {print rand(), $0}' | sort -n | cut -d' ' -f2- | head -n 10)
-magick montage "${files[@]}" -geometry '236x311^>' -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
-~/veter_scripts/imgcat -W 600px thumbnail.jpg
+if [[ ${#files[@]} -eq 0 ]]; then
+    echo -e "${YELLOW}No images in ${viewing_dir} to build preview. Skipping thumbnail.${NC}"
+elif [[ "${regenerate_thumbnail}" == true ]]; then
+    gum spin --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+    ~/veter_scripts/imgcat -W 600px thumbnail.jpg
+else
+    echo -e "${YELLOW}Reusing existing thumbnail.jpg${NC}"
+fi
 
 find . -name ".DS_Store" -delete
+
+if vpn_active; then
+    echo -e "${YELLOW}VPN is currently connected (detected via scutil). Upload may be slower or blocked. Press any key to continue, or Ctrl-C to abort.${NC}"
+    read -r -n 1 -s
+    echo
+fi
 
 # Check and create remote directories if they do not exist
 echo -e "${GREEN}Checking and creating remote directories if not exists...${NC}"
@@ -151,14 +212,15 @@ rclone sync "${viewing_dir}/" "${cloud}:/${rem_dir}/${loc_dir}/${viewing_dir}" -
 rclone sync "${printing_dir}/" "${cloud}:/${rem_dir}/${loc_dir}/${printing_dir}" --progress --transfers=20 || { echo -e "${RED}Failed to sync printing directory${NC}"; exit 1; }
 
 echo -e "${GREEN}Getting link...${NC}"
-rclone link "${cloud}:/${rem_dir}/${loc_dir}" | sed 's|https://cloud.mail.ru/public/|pavelveter.com/x/|g' | pbcopy || { echo -e "${RED}Failed to get link${NC}"; exit 1; }
+link=$(rclone link "${cloud}:/${rem_dir}/${loc_dir}" | sed 's|https://cloud.mail.ru/public/|pavelveter.com/x/|g') || { echo -e "${RED}Failed to get link${NC}"; exit 1; }
+printf '%s' "${link}" | pbcopy || { echo -e "${RED}Failed to copy link${NC}"; exit 1; }
 
-echo -e "\nLink:\e[92m $(pbpaste) \e[39m.\n"
+echo -e "\nLink:\e[92m ${link} \e[39m.\n"
 
 curl --silent -X POST "https://api.telegram.org/bot${TG_API}/sendPhoto" \
      -F "chat_id=${TG_CHAT}" \
      -F "photo=@thumbnail.jpg" \
-     -F "caption=${loc_dir}, фотографии готовы, вот ссылка: $(pbpaste)" \
+     --form-string "caption=${loc_dir}, фотографии готовы, вот ссылка: ${link}" \
      -F "disable_notification=true" > /dev/null 2>&1 || { echo -e "${RED}Failed to send link to Telegram${NC}"; exit 1; }
 
 afplay /System/Library/Sounds/Submarine.aiff || { echo -e "${RED}Failed to play sound${NC}"; exit 1; }
