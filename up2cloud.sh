@@ -50,6 +50,7 @@ declare -A commands=(
     [rclone]="rclone"
     [gum]="gum"
     [scutil]=""
+    [caffeinate]=""
     [pbcopy]=""
     [pbpaste]=""
     [curl]="curl"
@@ -162,6 +163,20 @@ vpn_active() {
     return 1
 }
 
+caffeinate_pid=""
+
+start_caffeinate() {
+    caffeinate -dimsu >/dev/null 2>&1 &
+    caffeinate_pid=$!
+}
+
+stop_caffeinate() {
+    if [[ -n "${caffeinate_pid}" ]]; then
+        kill "${caffeinate_pid}" 2>/dev/null || true
+        caffeinate_pid=""
+    fi
+}
+
 # Get the list of files in both directories
 viewing_files=$(get_file_list "${viewing_dir}")
 printing_files=$(get_file_list "${printing_dir}")
@@ -179,7 +194,7 @@ mapfile -t files < <(find "${viewing_dir}" -maxdepth 1 -type f -name "*.jpg" | a
 if [[ ${#files[@]} -eq 0 ]]; then
     echo -e "${YELLOW}No images in ${viewing_dir} to build preview. Skipping thumbnail.${NC}"
 elif [[ "${regenerate_thumbnail}" == true ]]; then
-    gum spin --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+    gum pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
     ~/veter_scripts/imgcat -W 600px thumbnail.jpg
 else
     echo -e "${YELLOW}Reusing existing thumbnail.jpg${NC}"
@@ -192,6 +207,9 @@ if vpn_active; then
     read -r -n 1 -s
     echo
 fi
+
+start_caffeinate
+trap stop_caffeinate EXIT
 
 # Check and create remote directories if they do not exist
 echo -e "${GREEN}Checking and creating remote directories if not exists...${NC}"
@@ -210,6 +228,8 @@ fi
 echo -e "${GREEN}Syncing...${NC}"
 rclone sync "${viewing_dir}/" "${cloud}:/${rem_dir}/${loc_dir}/${viewing_dir}" --progress --transfers=20 || { echo -e "${RED}Failed to sync viewing directory${NC}"; exit 1; }
 rclone sync "${printing_dir}/" "${cloud}:/${rem_dir}/${loc_dir}/${printing_dir}" --progress --transfers=20 || { echo -e "${RED}Failed to sync printing directory${NC}"; exit 1; }
+stop_caffeinate
+trap - EXIT
 
 echo -e "${GREEN}Getting link...${NC}"
 link=$(rclone link "${cloud}:/${rem_dir}/${loc_dir}" | sed 's|https://cloud.mail.ru/public/|pavelveter.com/x/|g') || { echo -e "${RED}Failed to get link${NC}"; exit 1; }
