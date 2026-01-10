@@ -8,8 +8,10 @@ viewing_dir='1. Для просмотра и интернета'
 printing_dir='2. Для печати и дизайна'
 cloud=mailru
 skip_cloud_dirs='^WPJA.com_Pics|^Мастер-классы|^Разное|^ПФ|^Копии|^Backups|^Calls'
+last_remote_file=".up2cloud_last_remote"
 
 GREEN='\033[0;32m'
+BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m'
@@ -87,21 +89,21 @@ prompt_thumbnail_action() {
 }
 
 ensure_source_images() {
-    if ! find . -maxdepth 1 -type f -name "*.jpg" ! -name "thumbnail.jpg" | grep -q .; then
-        if [[ -d "${printing_dir}" ]] && find "${printing_dir}" -type f -name "*.jpg" | grep -q .; then
-            log_warn "No .jpg files found in the current directory, but found in ${printing_dir}."
+    if ! find . -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) ! -iname "thumbnail.jpg" | grep -q .; then
+        if [[ -d "${printing_dir}" ]] && find "${printing_dir}" -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) | grep -q .; then
+            log_warn "No .jpg/.jpeg files found in the current directory, but found in ${printing_dir}."
         else
-            log_error "No .jpg files found in the current directory and in ${printing_dir}. Exiting."
+            log_error "No .jpg/.jpeg files found in the current directory and in ${printing_dir}. Exiting."
             read -rp "Press Enter to continue or Ctrl-C to exit"
         fi
     fi
 
     mkdir -p "${printing_dir}"
-    find . -maxdepth 1 -type f -name "*.jpg" ! -name "thumbnail.jpg" -exec mv {} "${printing_dir}/" \;
+    find . -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) ! -iname "thumbnail.jpg" -exec mv {} "${printing_dir}/" \;
 }
 
 choose_remote() {
-    local remotes_output remotes rem_dir loc_dir
+    local remotes_output remotes rem_dir loc_dir last_remote selected_opts=()
     loc_dir=$(basename "$(pwd)")
     if [[ $# -eq 0 ]]; then
         remotes_output=$(rclone lsf "${cloud}:" --dirs-only --format p | sed 's:/$::' | grep -v -E "${skip_cloud_dirs}" || true)
@@ -110,8 +112,17 @@ choose_remote() {
             exit 1
         fi
         mapfile -t remotes <<< "${remotes_output}"
+        if [[ -f "${last_remote_file}" ]]; then
+            last_remote=$(<"${last_remote_file}")
+            for r in "${remotes[@]}"; do
+                if [[ "${r}" == "${last_remote}" ]]; then
+                    selected_opts=(--selected "${last_remote}")
+                    break
+                fi
+            done
+        fi
         echo -e "\nPlease, select the directory to upload" >&2
-        if ! rem_dir=$(printf '%s\n' "${remotes[@]}" | gum choose --header "Remote directories on ${cloud}" --limit 1); then
+        if ! rem_dir=$(printf '%s\n' "${remotes[@]}" | gum choose --header "Remote directories on ${cloud}" --limit 1 "${selected_opts[@]}"); then
             log_error "Selection cancelled."
             exit 1
         fi
@@ -125,6 +136,7 @@ choose_remote() {
             exit 1
         fi
     fi
+    printf '%s' "${rem_dir}" > "${last_remote_file}" || true
     printf '%s\n' "${rem_dir}"
 }
 
@@ -132,7 +144,7 @@ get_file_list() {
     if [[ ! -d "$1" ]]; then
         mkdir -p "$1"
     fi
-    find "$1" -maxdepth 1 -type f -name "*.jpg" -exec basename {} \; | sort
+    find "$1" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) -exec basename {} \; | sort
 }
 
 maybe_resize() {
@@ -149,7 +161,7 @@ maybe_resize() {
 
 build_thumbnail() {
     log_info "Making preview image..."
-    mapfile -t files < <(find "${viewing_dir}" -maxdepth 1 -type f -name "*.jpg" | awk 'BEGIN {srand()} {print rand(), $0}' | sort -n | cut -d' ' -f2- | head -n 10)
+    mapfile -t files < <(find "${viewing_dir}" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) | awk 'BEGIN {srand()} {print rand(), $0}' | sort -n | cut -d' ' -f2- | head -n 10)
     if [[ ${#files[@]} -eq 0 ]]; then
         log_warn "No images in ${viewing_dir} to build preview. Skipping thumbnail."
     elif [[ "${regenerate_thumbnail}" == true ]]; then
@@ -272,7 +284,7 @@ share_and_notify() {
     log_info "Getting link..."
     link=$(rclone link "${cloud}:/${rem_dir}/${loc_dir}" | sed 's|https://cloud.mail.ru/public/|pavelveter.com/x/|g') || { log_error "Failed to get link"; exit 1; }
     printf '%s' "${link}" | pbcopy || { log_error "Failed to copy link"; exit 1; }
-    echo -e "\nLink:\e[92m ${link} \e[39m.\n"
+    echo -e "\nLink:${BLUE} ${link} ${NC}.\n"
 
     curl --silent -X POST "https://api.telegram.org/bot${TG_API}/sendPhoto" \
          -F "chat_id=${TG_CHAT}" \
