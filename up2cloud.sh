@@ -19,6 +19,7 @@ NC='\033[0m'
 regenerate_thumbnail=true
 vpn_services_to_restart=""
 caffeinate_pid=""
+dry_run=false
 
 log_info() { echo -e "${GREEN}$*${NC}" >&2; }
 log_warn() { echo -e "${YELLOW}$*${NC}" >&2; }
@@ -37,6 +38,9 @@ check_command() {
 
 preflight() {
     echo -e ""
+    if [[ "${dry_run}" == true ]]; then
+        log_warn "DRY RUN enabled: no files will be moved, uploaded, or sent."
+    fi
     declare -A commands=(
         [magick]="imagemagick"
         [rclone]="rclone"
@@ -89,6 +93,7 @@ prompt_thumbnail_action() {
 }
 
 ensure_source_images() {
+    # Move input JPEGs into printing_dir; allow continuing if empty
     if ! find . -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) ! -iname "thumbnail.jpg" | grep -q .; then
         if [[ -d "${printing_dir}" ]] && find "${printing_dir}" -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) | grep -q .; then
             log_warn "No .jpg/.jpeg files found in the current directory, but found in ${printing_dir}."
@@ -99,7 +104,11 @@ ensure_source_images() {
     fi
 
     mkdir -p "${printing_dir}"
-    find . -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) ! -iname "thumbnail.jpg" -exec mv {} "${printing_dir}/" \;
+    if [[ "${dry_run}" == true ]]; then
+        log_info "DRY RUN: would move JPEGs into ${printing_dir}"
+    else
+        find . -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) ! -iname "thumbnail.jpg" -exec mv {} "${printing_dir}/" \;
+    fi
 }
 
 choose_remote() {
@@ -152,8 +161,12 @@ maybe_resize() {
     viewing_files=$(get_file_list "${viewing_dir}")
     printing_files=$(get_file_list "${printing_dir}")
     if [[ "${viewing_files}" != "${printing_files}" ]]; then
-        log_info "Making little copies of the images for fast view..."
-        ~/veter_scripts/goresize -c 79 -h 2000 -w 2000 -i "${printing_dir}" -o "${viewing_dir}"
+        if [[ "${dry_run}" == true ]]; then
+            log_info "DRY RUN: would resize images into ${viewing_dir}"
+        else
+            log_info "Making little copies of the images for fast view..."
+            ~/veter_scripts/goresize -c 79 -h 2000 -w 2000 -i "${printing_dir}" -o "${viewing_dir}"
+        fi
     else
         log_warn "File lists in ${viewing_dir} and ${printing_dir} are identical. Skipping resize.\n"
     fi
@@ -165,8 +178,12 @@ build_thumbnail() {
     if [[ ${#files[@]} -eq 0 ]]; then
         log_warn "No images in ${viewing_dir} to build preview. Skipping thumbnail."
     elif [[ "${regenerate_thumbnail}" == true ]]; then
-        gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
-        ~/veter_scripts/imgcat -W 600px thumbnail.jpg
+        if [[ "${dry_run}" == true ]]; then
+            log_info "DRY RUN: would build thumbnail.jpg"
+        else
+            gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+            ~/veter_scripts/imgcat -W 600px thumbnail.jpg
+        fi
     else
         log_warn "Reusing existing thumbnail.jpg"
     fi
@@ -210,22 +227,29 @@ maybe_toggle_vpn() {
     if vpn_active; then
         local connected_vpns
         connected_vpns=$(get_connected_vpn_services || true)
-        if gum confirm "VPN is connected. Turn it off for upload and restore afterwards?"; then
-            vpn_services_to_restart="${connected_vpns}"
-            while IFS= read -r svc; do
-                [[ -z "${svc}" ]] && continue
-                log_warn "Stopping VPN: ${svc}"
-                stop_vpn_service "${svc}"
-            done <<< "${connected_vpns}"
+        if [[ "${dry_run}" == true ]]; then
+            log_warn "DRY RUN: VPN connected; would ask to stop and restore: ${connected_vpns}"
         else
-            log_warn "VPN is currently connected (detected via scutil). Upload may be slower or blocked. Press any key to continue, or Ctrl-C to abort."
-            read -r -n 1 -s
-            echo
+            if gum confirm "VPN is connected. Turn it off for upload and restore afterwards?"; then
+                vpn_services_to_restart="${connected_vpns}"
+                while IFS= read -r svc; do
+                    [[ -z "${svc}" ]] && continue
+                    log_warn "Stopping VPN: ${svc}"
+                    stop_vpn_service "${svc}"
+                done <<< "${connected_vpns}"
+            else
+                log_warn "VPN is currently connected (detected via scutil). Upload may be slower or blocked. Press any key to continue, or Ctrl-C to abort."
+                read -r -n 1 -s
+                echo
+            fi
         fi
     fi
 }
 
 start_caffeinate() {
+    if [[ "${dry_run}" == true ]]; then
+        return
+    fi
     caffeinate -dimsu >/dev/null 2>&1 &
     caffeinate_pid=$!
 }
@@ -238,6 +262,9 @@ stop_caffeinate() {
 }
 
 restore_vpn_if_needed() {
+    if [[ "${dry_run}" == true ]]; then
+        return
+    fi
     if [[ -n "${vpn_services_to_restart}" ]]; then
         while IFS= read -r svc; do
             [[ -z "${svc}" ]] && continue
@@ -257,6 +284,10 @@ ensure_remote_dirs() {
     rem_dir="$1"
     loc_dir="$2"
     log_info "Checking and creating remote directories if not exists..."
+    if [[ "${dry_run}" == true ]]; then
+        log_info "DRY RUN: would ensure remote dirs ${cloud}:/${rem_dir}/${loc_dir}/{${viewing_dir},${printing_dir}}"
+        return
+    fi
     if ! rclone lsd "${cloud}:/${rem_dir}/${loc_dir}" &>/dev/null; then
         rclone mkdir "${cloud}:/${rem_dir}/${loc_dir}" || { log_error "Failed to create main remote directory"; exit 1; }
     fi
@@ -273,6 +304,10 @@ sync_to_cloud() {
     rem_dir="$1"
     loc_dir="$2"
     log_info "Syncing..."
+    if [[ "${dry_run}" == true ]]; then
+        log_info "DRY RUN: would sync ${viewing_dir} and ${printing_dir} to ${cloud}:/${rem_dir}/${loc_dir}"
+        return
+    fi
     rclone sync "${viewing_dir}/" "${cloud}:/${rem_dir}/${loc_dir}/${viewing_dir}" --progress --transfers=20 || { log_error "Failed to sync viewing directory"; exit 1; }
     rclone sync "${printing_dir}/" "${cloud}:/${rem_dir}/${loc_dir}/${printing_dir}" --progress --transfers=20 || { log_error "Failed to sync printing directory"; exit 1; }
 }
@@ -282,6 +317,10 @@ share_and_notify() {
     rem_dir="$1"
     loc_dir="$2"
     log_info "Getting link..."
+    if [[ "${dry_run}" == true ]]; then
+        log_info "DRY RUN: would get link, copy to clipboard, send Telegram, play sound"
+        return
+    fi
     link=$(rclone link "${cloud}:/${rem_dir}/${loc_dir}" | sed 's|https://cloud.mail.ru/public/|pavelveter.com/x/|g') || { log_error "Failed to get link"; exit 1; }
     printf '%s' "${link}" | pbcopy || { log_error "Failed to copy link"; exit 1; }
     echo -e "\nLink:${BLUE} ${link} ${NC}.\n"
@@ -296,6 +335,17 @@ share_and_notify() {
 }
 
 main() {
+    # Parse optional flags
+    local args=()
+    for arg in "$@"; do
+        if [[ "${arg}" == "--dry-run" ]]; then
+            dry_run=true
+        else
+            args+=("${arg}")
+        fi
+    done
+    set -- "${args[@]}"
+
     preflight
     prompt_thumbnail_action
     ensure_source_images
