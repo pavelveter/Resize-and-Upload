@@ -21,6 +21,8 @@ regenerate_thumbnail=true
 vpn_services_to_restart=""
 caffeinate_pid=""
 dry_run=false
+preview_backend=""
+montage_font=""
 
 log_info() { echo -e "${GREEN}$*${NC}" >&2; }
 log_warn() { echo -e "${YELLOW}$*${NC}" >&2; }
@@ -35,6 +37,35 @@ check_command() {
         fi
         exit 1
     }
+}
+
+detect_preview_backend() {
+    if [[ -n "${KITTY_WINDOW_ID:-}" && "${TERM:-}" == "xterm-kitty" ]] && command -v kitty >/dev/null 2>&1; then
+        preview_backend="kitty"
+        return
+    fi
+
+    if [[ -x ~/veter_scripts/imgcat ]]; then
+        preview_backend="imgcat"
+        return
+    fi
+
+    preview_backend="none"
+}
+
+detect_montage_font() {
+    local candidate
+    for candidate in \
+        "/System/Library/Fonts/Menlo.ttc" \
+        "/System/Library/Fonts/Geneva.ttf" \
+        "/System/Library/Fonts/HelveticaNeue.ttc" \
+        "/Library/Fonts/Arial.ttf"
+    do
+        if [[ -f "${candidate}" ]]; then
+            montage_font="${candidate}"
+            return
+        fi
+    done
 }
 
 preflight() {
@@ -62,10 +93,13 @@ preflight() {
         exit 1
     fi
 
-    if [[ ! -x ~/veter_scripts/imgcat ]]; then
-        log_error "Custom script imgcat not found or not executable. Please download it from github.com/pavelveter"
+    detect_preview_backend
+    if [[ "${preview_backend}" == "none" ]]; then
+        log_error "No supported image preview tool found. Install kitty or make ~/veter_scripts/imgcat executable."
         exit 1
     fi
+
+    detect_montage_font
 
     if [[ "${dry_run}" != true ]]; then
         if ! rclone listremotes | grep -q "^${cloud}:"; then
@@ -84,6 +118,29 @@ preflight() {
     else
         log_warn "DRY RUN: skipping Telegram env check"
     fi
+}
+
+show_thumbnail_preview() {
+    local thumbnail_file
+    thumbnail_file="$1"
+
+    case "${preview_backend}" in
+        kitty)
+            kitty +kitten icat --clear --silent </dev/tty >/dev/tty 2>/dev/null || true
+            kitty +kitten icat --silent "${thumbnail_file}" </dev/tty >/dev/tty || {
+                log_warn "kitty preview failed, trying imgcat fallback"
+                if [[ -x ~/veter_scripts/imgcat ]]; then
+                    ~/veter_scripts/imgcat -W 600px "${thumbnail_file}" || log_warn "imgcat preview failed"
+                fi
+            }
+            ;;
+        imgcat)
+            ~/veter_scripts/imgcat -W 600px "${thumbnail_file}" || log_warn "imgcat preview failed"
+            ;;
+        *)
+            log_warn "Preview skipped: no supported terminal image backend"
+            ;;
+    esac
 }
 
 prompt_thumbnail_action() {
@@ -191,8 +248,12 @@ build_thumbnail() {
             log_info "DRY RUN: would build thumbnail.jpg"
         else
             while true; do
-                gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
-                ~/veter_scripts/imgcat -W 600px thumbnail.jpg
+                if [[ -n "${montage_font}" ]]; then
+                    gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -font "${montage_font}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+                else
+                    gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+                fi
+                show_thumbnail_preview thumbnail.jpg
                 if gum confirm "Thumbnail OK? (Yes = continue, No = rebuild)"; then
                     break
                 fi
@@ -252,17 +313,25 @@ maybe_toggle_vpn() {
         else
             if gum confirm "VPN is connected. Turn it off for upload and restore afterwards?"; then
                 vpn_services_to_restart="${connected_vpns}"
-                while IFS= read -r svc; do
-                    [[ -z "${svc}" ]] && continue
-                    log_warn "Stopping VPN: ${svc}"
-                    stop_vpn_service "${svc}"
-                done <<< "${connected_vpns}"
             else
                 log_warn "VPN is currently connected (detected via scutil). Upload may be slower or blocked. Press any key to continue, or Ctrl-C to abort."
                 read -r -n 1 -s
                 echo
             fi
         fi
+    fi
+}
+
+stop_vpn_if_needed() {
+    if [[ "${dry_run}" == true ]]; then
+        return
+    fi
+    if [[ -n "${vpn_services_to_restart}" ]]; then
+        while IFS= read -r svc; do
+            [[ -z "${svc}" ]] && continue
+            log_warn "Stopping VPN: ${svc}"
+            stop_vpn_service "${svc}"
+        done <<< "${vpn_services_to_restart}"
     fi
 }
 
@@ -378,6 +447,7 @@ main() {
     build_thumbnail
     cleanup_dsstore
 
+    stop_vpn_if_needed
     start_caffeinate
     trap cleanup EXIT
 
