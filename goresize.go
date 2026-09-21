@@ -62,6 +62,7 @@ var (
 	total_files_processed uint
 	total_from_files_size uint
 	total_out_files_size  uint
+	stats_mu              sync.Mutex
 
 	total_files_count int
 	mask_numb_s       string // [xxx] before filename in output
@@ -87,14 +88,24 @@ func sizeOfFile(fname string) uint {
 
 // Do resize one picture and do some statistics
 func doResizeOneImage(fname string, wg *sync.WaitGroup, quotaCh chan struct{}, ep *vips.ExportParams) {
-	quotaCh <- struct{}{}
 	defer wg.Done()
+	defer func() { <-quotaCh }()
 
 	image, err := vips.NewImageFromFile(fname)
 	isFatal("Failed to open image: "+fname+" from "+from_dir, err)
+	defer image.Close()
 	from_file_size := sizeOfFile(fname)
 
-	scale := float64(out_width) / float64(image.Width())
+	// Fit inside out_width x out_height box, preserving aspect ratio.
+	scaleW := float64(out_width) / float64(image.Width())
+	scaleH := float64(out_height) / float64(image.Height())
+	scale := scaleW
+	if scaleH < scaleW {
+		scale = scaleH
+	}
+	if scale > 1 {
+		scale = 1 // do not upscale small images
+	}
 	err = image.ResizeWithVScale(scale, scale, vips.KernelLanczos3)
 	isFatal("Failed to resize image: "+fname, err)
 
@@ -115,13 +126,15 @@ func doResizeOneImage(fname string, wg *sync.WaitGroup, quotaCh chan struct{}, e
 
 	out_file_size := uint(len(image_bytes))
 
+	stats_mu.Lock()
 	total_files_processed += 1
 	total_from_files_size += from_file_size
 	total_out_files_size += out_file_size
+	done := total_files_processed
+	stats_mu.Unlock()
 
-	fmt.Printf(mask_numb_s, color.GreenString(strconv.Itoa(int(uint(total_files_count)-total_files_processed+1))))
+	fmt.Printf(mask_numb_s, color.GreenString(strconv.Itoa(int(uint(total_files_count)-done+1))))
 	fmt.Printf("%s"+color.MagentaString(" processed, ")+"%vk "+color.MagentaString("->")+" %vk"+color.MagentaString(".")+"\n", base_fname, from_file_size/1024, out_file_size/1024)
-	<-quotaCh
 }
 
 // Let's scan the directory where we need to pick up the image files.
@@ -130,6 +143,7 @@ func doFromDirScan(files []string, ep *vips.ExportParams) {
 	quotaCh := make(chan struct{}, quota_limit)
 
 	for _, file := range files {
+		quotaCh <- struct{}{} // acquire slot BEFORE spawning goroutine: bounds memory
 		wg.Add(1)
 		go doResizeOneImage(file, &wg, quotaCh, ep)
 	}
@@ -144,6 +158,7 @@ func main() {
 
 	log.SetOutput(io.Discard)
 	vips.Startup(nil)
+	defer vips.Shutdown()
 	ep := vips.NewDefaultJPEGExportParams()
 
 	defer color.Unset()
@@ -179,6 +194,7 @@ func main() {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
+	ep.Quality = int(compress_rate)
 
 	// See if there's a directory to read pictures
 	if _, err := os.Stat(from_dir); os.IsNotExist(err) {
