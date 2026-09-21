@@ -42,10 +42,25 @@ style_ok() {
     printf '%s%s%s' "${COLOR_GREEN}" "$1" "${COLOR_RESET}"
 }
 
-cleanup() {
+SPIN_STTY_FILE="${TMP_DIR}/spin-stty.txt"
+
+restore_tty_and_cleanup() {
+    if [[ -f "${SPIN_STTY_FILE}" ]]; then
+        # A gum spin is (or was) in progress: drain any pending terminal
+        # capability replies before they get echoed, then restore the tty.
+        stty -icanon min 0 time 1 </dev/tty 2>/dev/null || true
+        local drain_line
+        for drain_line in 1 2; do
+            IFS= read -r -t 1 -n 4096 drain_line </dev/tty 2>/dev/null || break
+        done
+        stty "$(cat "${SPIN_STTY_FILE}")" </dev/tty 2>/dev/null || true
+        rm -f "${SPIN_STTY_FILE}"
+    fi
     rm -rf "${TMP_DIR}"
 }
-trap cleanup EXIT
+trap restore_tty_and_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 log() {
     printf '%s\n' "$*"
@@ -62,6 +77,50 @@ require_cmd() {
 
 gum_confirm() {
     gum confirm "$1"
+}
+
+gum_spin() {
+    # gum spin (bubbletea v2) probes the terminal for capabilities
+    # (synchronized updates mode 2026, unicode core mode 2027, kitty keyboard
+    # "?u") but runs with stdin disabled, so nothing consumes the replies.
+    # Once the spinner exits, the tty line discipline echoes them and they
+    # show up as garbage like "^[[?2026;2$y". Mute the echo while gum runs
+    # and drain any pending replies before restoring the tty. The EXIT trap
+    # (restore_tty_and_cleanup) covers an interrupted spin.
+    local spin_saved_stty=""
+    local spin_rc=0
+    local drain_line
+
+    if [[ -t 2 ]]; then
+        spin_saved_stty="$(stty -g </dev/tty 2>/dev/null)" || spin_saved_stty=""
+        if [[ -n "${spin_saved_stty}" ]]; then
+            printf '%s\n' "${spin_saved_stty}" > "${SPIN_STTY_FILE}"
+            stty -echo </dev/tty
+            # gum_spin runs in a command-substitution subshell, where the
+            # parent traps are reset, so arm local ones to restore the tty
+            # even if interrupted mid-spin. The saved state goes through a
+            # file so that the main shell's EXIT trap can restore the tty
+            # too, whichever process dies first.
+            trap 'if [[ -f "${SPIN_STTY_FILE}" ]]; then stty "$(cat "${SPIN_STTY_FILE}")" </dev/tty 2>/dev/null; rm -f "${SPIN_STTY_FILE}"; fi' EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+        fi
+    fi
+
+    SSH_TTY="${SSH_TTY:-/dev/null}" gum spin "$@" || spin_rc=$?
+
+    if [[ -n "${spin_saved_stty}" ]]; then
+        rm -f "${SPIN_STTY_FILE}"
+        stty -icanon min 0 time 1 </dev/tty
+        for drain_line in 1 2 3; do
+            IFS= read -r -t 1 -n 4096 drain_line </dev/tty 2>/dev/null || break
+        done
+        stty "${spin_saved_stty}" </dev/tty
+        trap restore_tty_and_cleanup EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+    fi
+    return "${spin_rc}"
 }
 
 gum_choose_single() {
@@ -143,6 +202,48 @@ date_from_epoch() {
     fi
 }
 
+latest_photo_epoch() {
+    local dir="$1"
+    local file
+    local epoch
+    local max_epoch=0
+
+    while IFS= read -r -d '' file; do
+        if is_macos; then
+            epoch="$(stat -f '%m' "${file}" 2>/dev/null || printf '0')"
+        else
+            epoch="$(stat -c '%Y' "${file}" 2>/dev/null || printf '0')"
+        fi
+        if (( epoch > max_epoch )); then
+            max_epoch="${epoch}"
+        fi
+    done < <(find "${dir}" -type f -print0 2>/dev/null)
+
+    printf '%s\n' "${max_epoch}"
+}
+
+latest_folder_for_date() {
+    local prefix="$1"
+    local folder_path
+    local folder
+    local folder_epoch
+    local best_folder=""
+    local best_epoch=0
+
+    [[ -d "${PHOTOS_DIR}" ]] || return 0
+
+    while IFS= read -r folder_path; do
+        folder="$(basename "${folder_path}")"
+        folder_epoch="$(latest_photo_epoch "${folder_path}")"
+        if (( folder_epoch > best_epoch )); then
+            best_epoch="${folder_epoch}"
+            best_folder="${folder}"
+        fi
+    done < <(find "${PHOTOS_DIR}" -mindepth 1 -maxdepth 1 -type d -name "${prefix}, *" -print 2>/dev/null | sort -r)
+
+    printf '%s\n' "${best_folder}"
+}
+
 datetime_from_epoch() {
     local epoch="$1"
     if is_macos; then
@@ -202,6 +303,19 @@ format_bytes() {
 format_megabytes() {
     local bytes="$1"
     awk -v bytes="${bytes}" 'BEGIN {printf "%.1f MB", bytes / 1048576}'
+}
+
+format_eta() {
+    # Remaining time as HH:MM:SS; hours shown only when non-zero.
+    local seconds="$1"
+    local hours=$(( seconds / 3600 ))
+    local minutes=$(( (seconds % 3600) / 60 ))
+    local secs=$(( seconds % 60 ))
+    if (( hours > 0 )); then
+        printf '%02d:%02d:%02d' "${hours}" "${minutes}" "${secs}"
+    else
+        printf '%02d:%02d' "${minutes}" "${secs}"
+    fi
 }
 
 append_if_dir() {
@@ -375,15 +489,32 @@ manifest_file_count() {
     awk 'END {print NR}' "${MANIFEST_FILE}"
 }
 
+internal_default_suffix() {
+    local date_prefix="$1"
+    local folder
+    local suffix=""
+
+    folder="$(latest_folder_for_date "${date_prefix%%, }")"
+    if [[ -n "${folder}" && "${folder}" == "${date_prefix}"* ]]; then
+        suffix="${folder#${date_prefix}}"
+    fi
+    printf '%s\n' "${suffix}"
+}
+
 choose_target_dir() {
     local prefix="$1"
+    local default_suffix="${2:-}"
     local suffix
     local folder_name
 
     mkdir -p "${PHOTOS_DIR}"
 
     while true; do
-        suffix="$(gum input --header "Folder in ~/Photos" --prompt "${prefix}" --placeholder "session name")" || exit 1
+        if [[ -n "${default_suffix}" ]]; then
+            suffix="$(gum input --header "Folder in ~/Photos" --prompt "${prefix}" --placeholder "session name" --value "${default_suffix}")" || exit 1
+        else
+            suffix="$(gum input --header "Folder in ~/Photos" --prompt "${prefix}" --placeholder "session name")" || exit 1
+        fi
         [[ -n "${suffix}" ]] || {
             gum_note "$(style_warn "Folder name suffix cannot be empty.")"
             continue
@@ -514,6 +645,7 @@ copy_files() {
     local copied_fmt
     local total_fmt
     local speed_fmt
+    local eta_fmt
 
     total_files="$(files_to_copy_count "${target_dir}" "${mode}")"
     start_ts="$(date +%s)"
@@ -552,7 +684,18 @@ copy_files() {
         total_fmt="$(format_megabytes "${TOTAL_BYTES_TO_COPY}")"
         speed_fmt="$(format_megabytes "${speed_bytes}")"
 
-        status_line="$(printf '%s[%s/%s]%s %s%s%s  %s%3s%%%s  %s%s%s%s / %s%s%s  %s%s/s%s' \
+        # Dynamic ETA: remaining bytes at the average speed so far,
+        # recalculated after every file. On the last copied file, show the
+        # total elapsed copy time instead of a pointless 00:00.
+        if (( copied_files == total_files )); then
+            eta_fmt="$(format_eta "${elapsed}")"
+        elif (( speed_bytes > 0 )); then
+            eta_fmt="$(format_eta $(( (TOTAL_BYTES_TO_COPY - copied_bytes) / speed_bytes )))"
+        else
+            eta_fmt="--:--"
+        fi
+
+        status_line="$(printf '%s[%s/%s]%s %s%s%s  %s%3s%%%s  %s%s%s%s / %s%s%s  %s%s/s%s  %s%s%s' \
             "${COLOR_DIM}" \
             "${copied_files}" \
             "${total_files}" \
@@ -571,6 +714,9 @@ copy_files() {
             "${COLOR_RESET}" \
             "${COLOR_YELLOW}" \
             "${speed_fmt}" \
+            "${COLOR_RESET}" \
+            "${COLOR_YELLOW}" \
+            "${eta_fmt}" \
             "${COLOR_RESET}")"
         printf '\r\033[2K%s' "${status_line}"
     done < "${MANIFEST_FILE}"
@@ -602,20 +748,25 @@ main() {
     local first_taken_at
 
     local source_root
-    source_root="$(gum spin --spinner line --title "Searching mounted flash cards..." -- bash "$0" --internal-pick-source)"
+    gum_spin --spinner line --title "Searching mounted flash cards..." -- bash "$0" --internal-pick-source > "${TMP_DIR}/source_root.txt"
+    source_root="$(cat "${TMP_DIR}/source_root.txt")"
     collect_files "${source_root}"
 
-    first_epoch="$(gum spin --spinner line --title "Reading photo dates..." -- bash "$0" --internal-first-epoch "${source_root}")"
+    gum_spin --spinner line --title "Reading photo dates..." -- bash "$0" --internal-first-epoch "${source_root}" > "${TMP_DIR}/first_epoch.txt"
+    first_epoch="$(cat "${TMP_DIR}/first_epoch.txt")"
     media_count="$(manifest_file_count)"
     first_taken_at="$(datetime_from_epoch "${first_epoch}")"
     date_prefix="$(date_from_epoch "${first_epoch}"), "
 
+    gum_spin --spinner line --title "Matching existing folder in ~/Photos..." -- bash "$0" --internal-default-suffix "${date_prefix}" > "${TMP_DIR}/default_suffix.txt"
+
     gum_note "Found flash media at $(style_path "${source_root}") | $(style_info "${media_count} files") | first shot $(style_info "${first_taken_at}")"
 
-    target_dir="$(choose_target_dir "${date_prefix}")"
+    target_dir="$(choose_target_dir "${date_prefix}" "$(cat "${TMP_DIR}/default_suffix.txt")")"
     mkdir -p "${target_dir}"
 
-    target_stats="$(gum spin --spinner line --title "Checking existing files..." -- bash "$0" --internal-inspect-target "${source_root}" "${target_dir}")"
+    gum_spin --spinner line --title "Checking existing files..." -- bash "$0" --internal-inspect-target "${source_root}" "${target_dir}" > "${TMP_DIR}/target_stats.txt"
+    target_stats="$(cat "${TMP_DIR}/target_stats.txt")"
     IFS=';' read -r duplicate_count changed_count missing_count <<< "${target_stats}"
 
     if (( duplicate_count > 0 || changed_count > 0 )); then
@@ -640,7 +791,8 @@ main() {
         gum_note "Existing folder check: $(style_warn "${changed_count} changed files"), $(style_ok "${missing_count} new files")."
     fi
 
-    needed_bytes="$(gum spin --spinner line --title "Calculating required space..." -- bash "$0" --internal-bytes-to-copy "${source_root}" "${target_dir}" "${copy_mode}")"
+    gum_spin --spinner line --title "Calculating required space..." -- bash "$0" --internal-bytes-to-copy "${source_root}" "${target_dir}" "${copy_mode}" > "${TMP_DIR}/needed_bytes.txt"
+    needed_bytes="$(cat "${TMP_DIR}/needed_bytes.txt")"
     TOTAL_BYTES_TO_COPY="${needed_bytes}"
     ensure_free_space "${target_dir}" "${needed_bytes}"
     copy_files "${target_dir}" "${copy_mode}"
@@ -656,6 +808,11 @@ main() {
 
 if [[ "${1:-}" == "--internal-pick-source" ]]; then
     pick_source_mount
+    exit 0
+fi
+
+if [[ "${1:-}" == "--internal-default-suffix" ]]; then
+    internal_default_suffix "$2"
     exit 0
 fi
 
