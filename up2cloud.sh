@@ -8,6 +8,7 @@ viewing_dir='1. Для просмотра и интернета'
 printing_dir='2. Для печати и дизайна'
 cloud=mailru
 skip_cloud_dirs='^WPJA.com_Pics|^Мастер-классы|^Разное|^ПФ|^Копии|^Backups|^Calls'
+tg_caption_footer=$'Портфолио фотографа: photo.pavelveter.com\nAI & ИТ-инфраструктура: pavelveter.com'
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 last_remote_file="${script_dir}/.up2cloud_last_remote"
 
@@ -414,10 +415,14 @@ share_and_notify() {
     printf '%s' "${link}" | pbcopy || { log_error "Failed to copy link"; exit 1; }
     echo -e "\nLink:${BLUE} ${link} ${NC}.\n"
 
+    local caption
+    caption="${loc_dir}, фотографии готовы, вот ссылка: ${link}"
+    caption+=$'\n\n\n'"${tg_caption_footer}"
+
     curl --silent -X POST "https://api.telegram.org/bot${TG_API}/sendPhoto" \
          -F "chat_id=${TG_CHAT}" \
          -F "photo=@thumbnail.jpg" \
-         --form-string "caption=${loc_dir}, фотографии готовы, вот ссылка: ${link}" \
+         --form-string "caption=${caption}" \
          -F "disable_notification=true" > /dev/null 2>&1 || { log_error "Failed to send link to Telegram"; exit 1; }
 
     afplay /System/Library/Sounds/Submarine.aiff || { log_error "Failed to play sound"; exit 1; }
