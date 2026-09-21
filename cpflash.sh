@@ -203,23 +203,14 @@ date_from_epoch() {
 }
 
 latest_photo_epoch() {
+    # Batch stat: one find + a handful of stat processes instead of
+    # two forks per file. Output is mtimes only, so newline-safe.
     local dir="$1"
-    local file
-    local epoch
-    local max_epoch=0
-
-    while IFS= read -r -d '' file; do
-        if is_macos; then
-            epoch="$(stat -f '%m' "${file}" 2>/dev/null || printf '0')"
-        else
-            epoch="$(stat -c '%Y' "${file}" 2>/dev/null || printf '0')"
-        fi
-        if (( epoch > max_epoch )); then
-            max_epoch="${epoch}"
-        fi
-    done < <(find "${dir}" -type f -print0 2>/dev/null)
-
-    printf '%s\n' "${max_epoch}"
+    if is_macos; then
+        find "${dir}" -type f -exec stat -f '%m' {} + 2>/dev/null | awk 'BEGIN{max=0} $1>max{max=$1} END{print max}'
+    else
+        find "${dir}" -type f -exec stat -c '%Y' {} + 2>/dev/null | awk 'BEGIN{max=0} $1>max{max=$1} END{print max}'
+    fi
 }
 
 latest_folder_for_date() {
@@ -446,43 +437,53 @@ pick_source_mount() {
 }
 
 collect_files() {
+    # Batch sizes with one xargs-driven stat run (output order matches
+    # input order, one size per line) instead of three forks per file,
+    # and a single sort pass for dup detection instead of an O(n^2) grep.
     local root="$1"
+    local -a files=()
     local file
-    local base
     local size
-    local seen_names="${TMP_DIR}/seen_names.txt"
-
-    : > "${MANIFEST_FILE}"
-    : > "${seen_names}"
+    local dups
 
     while IFS= read -r -d '' file; do
-        base="$(basename "${file}")"
-        if grep -Fxq -- "${base}" "${seen_names}"; then
-            die "duplicate filename on source for flat copy: ${base}"
-        fi
-        printf '%s\n' "${base}" >> "${seen_names}"
-        size="$(file_size_bytes "${file}")"
-        printf '%s\t%s\t%s\n' "${file}" "${base}" "${size}" >> "${MANIFEST_FILE}"
+        files+=("${file}")
     done < <(find_media_files "${root}")
 
-    [[ -s "${MANIFEST_FILE}" ]] || die "no media files found on ${root}"
+    (( ${#files[@]} > 0 )) || die "no media files found on ${root}"
+
+    if is_macos; then
+        printf '%s\0' "${files[@]}" | xargs -0 stat -f '%z' 2>/dev/null > "${TMP_DIR}/sizes.txt"
+    else
+        printf '%s\0' "${files[@]}" | xargs -0 stat -c '%s' 2>/dev/null > "${TMP_DIR}/sizes.txt"
+    fi
+
+    {
+        exec 3< "${TMP_DIR}/sizes.txt"
+        for file in "${files[@]}"; do
+            if ! IFS= read -r size <&3; then
+                size=""
+            fi
+            printf '%s\t%s\t%s\n' "${file}" "${file##*/}" "${size}"
+        done
+        exec 3<&-
+    } > "${MANIFEST_FILE}"
+
+    dups="$(cut -f2 "${MANIFEST_FILE}" | sort | uniq -d)"
+    if [[ -n "${dups}" ]]; then
+        die "duplicate filename on source for flat copy: $(head -n1 <<<"${dups}")"
+    fi
 }
 
 first_file_epoch() {
-    local min_epoch=0
-    local source_file
-    local base
-    local size
-    local current
-
-    while IFS=$'\t' read -r source_file base size; do
-        current="$(file_birth_epoch "${source_file}")"
-        if (( min_epoch == 0 || current < min_epoch )); then
-            min_epoch="${current}"
-        fi
-    done < "${MANIFEST_FILE}"
-
-    printf '%s\n' "${min_epoch}"
+    # One batched stat for birth+mtime of every file; awk picks
+    # birthtime with mtime fallback and the minimum, same as
+    # file_birth_epoch did per file.
+    if is_macos; then
+        cut -f1 "${MANIFEST_FILE}" | tr '\n' '\0' | xargs -0 stat -f '%B %m' 2>/dev/null | awk '{v=($1>0?$1:$2)} NR==1||v<min{min=v} END{print min+0}'
+    else
+        cut -f1 "${MANIFEST_FILE}" | tr '\n' '\0' | xargs -0 stat -c '%W %Y' 2>/dev/null | awk '{v=($1>0?$1:$2)} NR==1||v<min{min=v} END{print min+0}'
+    fi
 }
 
 manifest_file_count() {
