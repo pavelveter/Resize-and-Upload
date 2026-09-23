@@ -24,6 +24,60 @@ caffeinate_pid=""
 dry_run=false
 preview_backend=""
 montage_font=""
+tmp_dir="$(mktemp -d)"
+spin_stty_file="${tmp_dir}/spin-stty.txt"
+
+restore_spin_tty() {
+    if [[ -f "${spin_stty_file}" ]]; then
+        # A gum spin is (or was) in progress: drain any pending terminal
+        # capability replies before they get echoed, then restore the tty.
+        stty -icanon min 0 time 1 </dev/tty 2>/dev/null || true
+        local drain_line
+        for drain_line in 1 2; do
+            IFS= read -r -t 1 -n 4096 drain_line </dev/tty 2>/dev/null || break
+        done
+        stty "$(cat "${spin_stty_file}")" </dev/tty 2>/dev/null || true
+        rm -f "${spin_stty_file}"
+    fi
+}
+
+gum_spin() {
+    # gum spin (bubbletea v2) probes the terminal for capabilities
+    # (synchronized updates mode 2026, unicode core mode 2027, kitty keyboard
+    # "?u") but runs with stdin disabled, so nothing consumes the replies.
+    # Once the spinner exits, the tty line discipline echoes them and they
+    # show up as garbage like "^[[?2026;2$y". Mute the echo while gum runs
+    # and drain any pending replies before restoring the tty.
+    local spin_saved_stty=""
+    local spin_rc=0
+    local drain_line
+
+    if [[ -t 2 ]]; then
+        spin_saved_stty="$(stty -g </dev/tty 2>/dev/null)" || spin_saved_stty=""
+        if [[ -n "${spin_saved_stty}" ]]; then
+            printf '%s\n' "${spin_saved_stty}" > "${spin_stty_file}"
+            stty -echo </dev/tty
+            trap 'if [[ -f "${spin_stty_file}" ]]; then stty "$(cat "${spin_stty_file}")" </dev/tty 2>/dev/null; rm -f "${spin_stty_file}"; fi' EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+        fi
+    fi
+
+    SSH_TTY="${SSH_TTY:-/dev/null}" gum spin "$@" || spin_rc=$?
+
+    if [[ -n "${spin_saved_stty}" ]]; then
+        rm -f "${spin_stty_file}"
+        stty -icanon min 0 time 1 </dev/tty
+        for drain_line in 1 2 3; do
+            IFS= read -r -t 1 -n 4096 drain_line </dev/tty 2>/dev/null || break
+        done
+        stty "${spin_saved_stty}" </dev/tty
+        trap cleanup EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+    fi
+    return "${spin_rc}"
+}
 
 log_info() { echo -e "${GREEN}$*${NC}" >&2; }
 log_warn() { echo -e "${YELLOW}$*${NC}" >&2; }
@@ -250,9 +304,9 @@ build_thumbnail() {
         else
             while true; do
                 if [[ -n "${montage_font}" ]]; then
-                    gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -font "${montage_font}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+                    gum_spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -font "${montage_font}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
                 else
-                    gum spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
+                    gum_spin --spinner pulse --title "Building thumbnail..." -- magick montage "${files[@]}" -geometry "236x311^>" -gravity center -extent 236x311 -tile 5x2 -background white -bordercolor white -border 2 thumbnail.jpg
                 fi
                 show_thumbnail_preview thumbnail.jpg
                 if gum confirm "Thumbnail OK? (Yes = continue, No = rebuild)"; then
@@ -365,8 +419,10 @@ restore_vpn_if_needed() {
 }
 
 cleanup() {
+    restore_spin_tty
     stop_caffeinate
     restore_vpn_if_needed
+    rm -rf "${tmp_dir}"
 }
 
 ensure_remote_dirs() {
@@ -464,5 +520,9 @@ main() {
 
     share_and_notify "${rem_dir}" "${loc_dir}"
 }
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 main "$@"
