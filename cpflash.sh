@@ -309,6 +309,40 @@ format_eta() {
     fi
 }
 
+term_cols() {
+    local cols="${COLUMNS:-}"
+    if [[ -z "${cols}" ]]; then
+        cols="$(tput cols 2>/dev/null || printf '80')"
+    fi
+    [[ "${cols}" =~ ^[0-9]+$ ]] || cols=80
+    (( cols < 20 )) && cols=20
+    printf '%s\n' "${cols}"
+}
+
+fit_rel() {
+    # Truncate to at most avail visible cells, keeping the tail (filename).
+    # Length math uses ${#}, which overcounts multibyte chars on some bash
+    # builds — that only makes the line shorter, never wider, so the
+    # one-line guarantee holds.
+    # Ponytail: tail-preserving truncation; upgrade path is middle-
+    # ellipsis with wcwidth-aware measuring if names need exact fit.
+    local rel="$1"
+    local avail="$2"
+    local base head_len
+    (( avail < 8 )) && avail=8
+    if (( ${#rel} <= avail )); then
+        printf '%s' "${rel}"
+        return
+    fi
+    base="$(basename -- "${rel}")"
+    if (( ${#base} + 2 >= avail )); then
+        printf '%s…' "${base:0:avail-1}"
+        return
+    fi
+    head_len=$(( avail - ${#base} - 2 ))
+    printf '%s…/%s' "${rel:0:head_len}" "${base}"
+}
+
 append_if_dir() {
     local dir="$1"
     [[ -d "${dir}" ]] && printf '%s\n' "${dir}"
@@ -647,6 +681,14 @@ copy_files() {
     local total_fmt
     local speed_fmt
     local eta_fmt
+    local cols
+    local counter
+    local pct_txt
+    local sizes_txt
+    local speed_txt
+    local fixed_len
+    local avail
+    local base_disp
 
     total_files="$(files_to_copy_count "${target_dir}" "${mode}")"
     start_ts="$(date +%s)"
@@ -696,29 +738,60 @@ copy_files() {
             eta_fmt="--:--"
         fi
 
-        status_line="$(printf '%s[%s/%s]%s %s%s%s  %s%3s%%%s  %s%s%s%s / %s%s%s  %s%s/s%s  %s%s%s' \
-            "${COLOR_DIM}" \
-            "${copied_files}" \
-            "${total_files}" \
-            "${COLOR_RESET}" \
-            "${COLOR_BLUE}" \
-            "${base}" \
-            "${COLOR_RESET}" \
-            "${COLOR_GREEN}" \
-            "${percent}" \
-            "${COLOR_RESET}" \
-            "${COLOR_CYAN}" \
-            "${copied_fmt}" \
-            "${COLOR_RESET}" \
-            "${COLOR_DIM}" \
-            "${total_fmt}" \
-            "${COLOR_RESET}" \
-            "${COLOR_YELLOW}" \
-            "${speed_fmt}" \
-            "${COLOR_RESET}" \
-            "${COLOR_YELLOW}" \
-            "${eta_fmt}" \
-            "${COLOR_RESET}")"
+        # Single updating line: truncate base so the visible line never
+        # exceeds the terminal width (narrow terminals wrapped it into
+        # new lines). On very narrow terminals fall back to a compact
+        # line that keeps counter, file tail, percent and ETA.
+        cols="$(term_cols)"
+        counter="[${copied_files}/${total_files}]"
+        pct_txt="$(printf '%3s%%' "${percent}")"
+        sizes_txt="${copied_fmt} / ${total_fmt}"
+        speed_txt="${speed_fmt}/s"
+        fixed_len=$(( ${#counter} + 1 + 2 + 4 + 2 + ${#sizes_txt} + 2 + ${#speed_txt} + 2 + ${#eta_fmt} ))
+        avail=$(( cols - fixed_len - 1 ))
+        if (( avail >= 12 )); then
+            base_disp="$(fit_rel "${base}" "${avail}")"
+            status_line="$(printf '%s[%s/%s]%s %s%s%s  %s%3s%%%s  %s%s%s%s / %s%s%s  %s%s/s%s  %s%s%s' \
+                "${COLOR_DIM}" \
+                "${copied_files}" \
+                "${total_files}" \
+                "${COLOR_RESET}" \
+                "${COLOR_BLUE}" \
+                "${base_disp}" \
+                "${COLOR_RESET}" \
+                "${COLOR_GREEN}" \
+                "${percent}" \
+                "${COLOR_RESET}" \
+                "${COLOR_CYAN}" \
+                "${copied_fmt}" \
+                "${COLOR_RESET}" \
+                "${COLOR_DIM}" \
+                "${total_fmt}" \
+                "${COLOR_RESET}" \
+                "${COLOR_YELLOW}" \
+                "${speed_fmt}" \
+                "${COLOR_RESET}" \
+                "${COLOR_YELLOW}" \
+                "${eta_fmt}" \
+                "${COLOR_RESET}")"
+        else
+            avail=$(( cols - ${#counter} - 1 - 4 - 2 - ${#eta_fmt} - 2 ))
+            base_disp="$(fit_rel "${base}" "${avail}")"
+            status_line="$(printf '%s[%s/%s]%s %s%s%s  %s%s%s  %s%s%s' \
+                "${COLOR_DIM}" \
+                "${copied_files}" \
+                "${total_files}" \
+                "${COLOR_RESET}" \
+                "${COLOR_BLUE}" \
+                "${base_disp}" \
+                "${COLOR_RESET}" \
+                "${COLOR_GREEN}" \
+                "${pct_txt}" \
+                "${COLOR_RESET}" \
+                "${COLOR_YELLOW}" \
+                "${eta_fmt}" \
+                "${COLOR_RESET}")"
+        fi
         printf '\r\033[2K%s' "${status_line}"
     done < "${MANIFEST_FILE}"
 
